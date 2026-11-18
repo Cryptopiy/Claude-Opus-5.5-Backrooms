@@ -1,0 +1,200 @@
+extends Node3D
+## Отладка: все копии, предметы и Сущность в ряд при ровном свете. --scene=gallery --set=copies|objects|lifeform|async|tv|decor
+
+const Props := preload("res://src/world/props.gd")
+const LifeformS := preload("res://src/world/lifeform.gd")
+
+var player = null
+var cam: Camera3D
+var fcam: FreeCam = null       # в полигоне по галерее можно летать
+
+
+func _ready() -> void:
+	var we := WorldEnvironment.new()
+	var e := Environment.new()
+	e.background_mode = Environment.BG_COLOR
+	e.background_color = Color(0.1, 0.09, 0.05)
+	e.tonemap_mode = Environment.TONE_MAPPER_FILMIC
+	e.tonemap_white = 3.0
+	e.glow_enabled = true
+	we.environment = e
+	add_child(we)
+	RenderingServer.global_shader_parameter_set("g_fog", Vector4(0.1, 0.09, 0.05, 0.01))
+	RenderingServer.global_shader_parameter_set("g_ambient", 0.02)
+	var fl := MeshInstance3D.new()
+	var pm := PlaneMesh.new()
+	pm.size = Vector2(80, 40)
+	fl.mesh = pm
+	fl.material_override = Props.m_carpet()
+	add_child(fl)
+	var wall := MeshInstance3D.new()
+	var wm := BoxMesh.new()
+	wm.size = Vector3(80, 2.7, 0.2)
+	wall.mesh = wm
+	wall.material_override = Props.m_wall()
+	wall.position = Vector3(0, 1.35, -2.0)
+	add_child(wall)
+	var set_name := Cfg.arg("set", "copies")
+	var items := []
+	match set_name:
+		"copies":
+			var whos := ["jogger", "mother", "kid", "oldman", "couple", "suit", "vendor", "teen", "explorer", "player"]
+			var wr := ["none", "stretch", "twist", "arms", "flat", "corner", "sunk", "hstretch", "back", "wall"]
+			for i in whos.size():
+				items.append({"k": "copy", "who": whos[i], "wrong": wr[i], "seed": i * 7 + 1, "react": false})
+		"copies2":
+			var w2 := ["melt_bench", "stroller_fused", "fused", "ceiling", "fused_floor", "seated_air"]
+			var who2 := ["oldman", "mother", "couple", "suit", "civ_a", "teen"]
+			for i in w2.size():
+				items.append({"k": "copy", "who": who2[i], "wrong": w2[i], "seed": i * 5 + 3, "react": false})
+		"objects":
+			for w in ["bench", "lamp", "bin", "tree", "fountain", "slide", "swing", "cart", "car", "stroller", "chair", "desk", "cabinet", "tv", "hill_chair"]:
+				items.append({"k": "obj", "what": w, "wrong": "none"})
+		"tv":
+			for ch in ["async_ad", "news", "explorers", "home", "weather", "bars"]:
+				items.append({"k": "tv_on", "ch": ch})
+		"finds":
+			items.append({"k": "hazmat", "pose": "slump", "seed": 5, "note": true, "key": "note.a_hz1"})
+			items.append({"k": "hazmat", "pose": "lie", "seed": 9})
+			for f in ["clothes", "tripod_cam", "drag", "lone_door", "lost_camp"]:
+				items.append({"k": f})
+		"decor":
+			# мелочи декора: обломки, бумаги, колонки, манекены, телевизор и торшер дома, плесень/потёки на стене
+			for f in [["obj", "debris"], ["papers", ""], ["speaker", ""], ["speaker_hub", ""], ["mannequin", ""], ["mannequin", "1"],
+					["house", "tv"], ["house", "floorlamp"], ["mold", "0"], ["mold", "1"], ["mold", "2"], ["mold", "3"]]:
+				var a: Array = f
+				var it := {"k": a[0], "seed": items.size() * 13 + 5}
+				if a[0] == "obj":
+					it["what"] = a[1]
+				elif a[0] == "house":
+					it["what"] = a[1]
+				elif a[0] == "mold":
+					it["s"] = 1.6
+					it["v"] = int(a[1])
+					it["wall"] = true
+				items.append(it)
+		"async":
+			for w in ["lamp_stand", "case", "case_open", "crate", "table", "spool", "generator", "board", "rover", "cones", "tripod", "radio", "winch"]:
+				items.append({"k": "async", "what": w})
+			items.append({"k": "threshold"})
+			items.append({"k": "nest"})
+			items.append({"k": "null", "id": "null_x"})
+	if set_name.begins_with("models"):
+		var ids := []
+		for d in DirAccess.get_directories_at("res://models"):
+			ids.append(String(d))
+		ids.sort()
+		# «models» без номера — все модели сеткой по 16 в ряд (для полигона), иначе — часть из 11
+		var all := set_name == "models"
+		# часть из 11 — в два ряда (6 + 5, второй ряд со сдвигом на полшага): всё в кадре и не слишком далеко
+		var per := 16 if all else 6
+		if not all:
+			var part := int(set_name.substr(6)) if set_name.length() > 6 else 0
+			ids = ids.slice(part * 11, part * 11 + 11)
+		for i in ids.size():
+			var id: String = ids[i]
+			var m := Models.make(id, true)
+			if m == null:
+				continue
+			var row := i / per
+			var n_in := mini(per, ids.size() - row * per)
+			var mx := -float(n_in - 1) * 1.1 + float(i % per) * 2.2
+			var mz := float(row) * (3.4 if all else 2.6)
+			add_child(m)
+			# подвесные модели (начало — точка крепления к потолку, сетка ниже нуля) — поднять на пол
+			var bb := Models.aabb(id)
+			m.position = Vector3(mx, maxf(-bb.position.y, 0.0), mz)
+			Props.set_light(m, Color(0.45, 0.0, 0.0, 0.0))
+			var lb := Props.label(id, Props.font_sign(), 0.0022, Color(1, 1, 1))
+			lb.position = Vector3(mx, 0.05, mz + 0.9)
+			lb.rotation.x = -0.6
+			add_child(lb)
+		cam = Camera3D.new()
+		add_child(cam)
+		cam.fov = 60.0
+		# два ряда по 6 и 5 моделей (11 м): камера ближе (видны детали), --cx/--dist/--cy/--ly — навести на одну модель
+		var mcx := float(Cfg.arg("cx", "0"))
+		cam.position = Vector3(mcx + float(Cfg.arg("ox", "0")), float(Cfg.arg("cy", "3.2")), float(Cfg.arg("dist", "8.4"))) if not all else Vector3(0, 2.0, -0.8)
+		cam.look_at(Vector3(mcx, float(Cfg.arg("ly", "0.5")), 1.3) if not all else Vector3(0, 0.6, 6.0))
+		cam.current = true
+		_fly()
+		if Game.main != null:
+			Game.main.osd.shown = false
+			Game.main.set_fade(Color(0, 0, 0, 0))
+		return
+	var x := -float(items.size() - 1) * 1.6
+	for d in items:
+		var dd: Dictionary = d
+		dd["p"] = Vector3(x, 1.4, -1.89) if bool(dd.get("wall", false)) else Vector3(x, 0, 0)
+		var n: Node3D = Props.spawn(self, dd, 0)
+		if n != null:
+			add_child(n)
+			n.position = dd.p
+			n.rotation.y = 0.0
+			Props.set_light(n, Color(0.45, 0.0, 0.0, 0.0))
+		x += 3.2
+	if set_name == "anim":
+		var spec := [["jogger", "run"], ["mother", "walk"], ["suit", "walk"], ["explorer", "walk"], ["oldman", "read"], ["teen", "sit"]]
+		for k in spec.size():
+			var hh := Human.make(String(spec[k][0]), 5 + k, false)
+			add_child(hh)
+			hh.position = Vector3(-5.0 + k * 2.0, 0, 0)
+			hh.rotation.y = 0.5
+			var pn: String = spec[k][1]
+			if pn == "walk" or pn == "run":
+				hh.pose_name = pn
+			else:
+				hh.pose(pn)
+		var sun := DirectionalLight3D.new()
+		sun.rotation = Vector3(-0.8, 0.6, 0)
+		add_child(sun)
+		e.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
+		e.ambient_light_color = Color(0.5, 0.5, 0.5)
+	if set_name == "lifeform":
+		for k in 3:
+			var lf := LifeformS.new()
+			add_child(lf)
+			lf._build()
+			lf.position = Vector3(-6.0 + k * 3.6, 0, 0)
+			lf.cur_speed = [0.0, 1.3, 5.0][k]
+			lf.state_t = 1.0
+			lf._animate(0.3 + k * 0.2)
+			LifeformS._apply_light(lf, Vector4(0.9, 0, 0, 0))
+			for eye in lf.eyes:
+				(eye as Node3D).visible = true
+		# плачущая копия нижнего слоя
+		var st := Human.make("civ_c", 913, true)
+		add_child(st)
+		st.tune({"mold": 0.9, "pale": 0.7, "smear": 2.0, "wet": 0.6})
+		st.pose("stand")
+		st.scale = Vector3(1.0, 1.08, 1.0)
+		st.position = Vector3(4.6, 0, 0)
+		Props.set_light(st, Color(0.45, 0.0, 0.0, 0.0))
+	cam = Camera3D.new()
+	add_child(cam)
+	cam.fov = 60.0
+	var span := maxf(float(items.size()) * 3.2, 10.0)
+	var dist := float(Cfg.arg("dist", str(minf(span * 0.75, 30.0))))
+	var lx := float(Cfg.arg("cx", "0"))
+	cam.position = Vector3(lx + float(Cfg.arg("ox", "0")), float(Cfg.arg("cy", "1.6")), dist)
+	cam.look_at(Vector3(lx, float(Cfg.arg("ly", "1.0")), 0))
+	cam.current = true
+	# в полигоне — от начала ряда по диагонали, дальше пролететь вдоль
+	if Game.mode == "polygon" and items.size() > 3:
+		var x0 := -float(items.size() - 1) * 1.6
+		cam.position = Vector3(x0 - 2.0, 1.75, 4.2)
+		cam.look_at(Vector3(x0 + 5.0, 1.0, 0.0))
+	_fly()
+	if Game.main != null:
+		Game.main.osd.shown = false
+		Game.main.set_fade(Color(0, 0, 0, 0))
+
+
+## В полигоне камера галереи свободная: WASD, мышь, Пробел / Ctrl, Shift
+func _fly() -> void:
+	if Game.mode != "polygon":
+		return
+	fcam = FreeCam.new()
+	add_child(fcam)
+	fcam.copy_from(cam.global_transform)
+	fcam.current = true
